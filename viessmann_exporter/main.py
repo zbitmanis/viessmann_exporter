@@ -4,7 +4,9 @@ FastAPI App to Expose Viessmann OAuth2 Metrics for Prometheus
 
 import os
 import asyncio
+import html
 import logging
+import time
 
 from pathlib import Path
 
@@ -12,7 +14,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import Gauge, generate_latest, CONTENT_TYPE_LATEST
 
 from typing import Optional
 
@@ -38,6 +40,8 @@ FAIL_URL = os.environ.get("VIESSMANN_FAIL_URL", "/fail")
 METRICS_URL = os.environ.get("VIESSMANN_METRICS_URL", "/metrics")
 METRICS_CONFIG = os.environ.get("VIESSMANN_METRICS_CONFIG", CONFIG_DIR+"/metrics.yaml")
 STATS_FILE = os.environ.get("VIESSMANN_STATS_FILE", "./features.json")
+# Debug routes that expose tokens/config are disabled unless explicitly enabled
+DEBUG_ENABLED = os.environ.get("VIESSMANN_DEBUG_ENABLED", "false").lower() in ("1", "true", "yes")
 DEBUG_STATUS_URL = os.environ.get("VIESSMANN_DEBUG_STATUS_URL", "/debug/token/status")
 DEBUG_RAW_URL = os.environ.get("VIESSMANN_DEBUG_RAW_URL", "/debug/token/raw")
 DEBUG_ROUTES_URL = os.environ.get("VIESSMANN_DEBUG_ROUTES_URL", "/debug/routes")
@@ -50,6 +54,19 @@ TOKEN_STORE_PATH = Path(os.environ.get("VIESSMANN_TOKEN_STORE", TOKEN_DIR+"/vies
 logger = logging.getLogger(__name__)
 
 token_store=TokenStore(TOKEN_STORE_PATH)
+
+REFRESH_TOKEN_AGE = Gauge(
+    "viessmann_refresh_token_age_seconds",
+    "Seconds since the refresh token was last issued (0 if none stored)",
+)
+
+
+def _refresh_token_age() -> float:
+    updated = token_store.load().get("refresh_updated_at")
+    return float(time.time() - updated) if updated else 0.0
+
+
+REFRESH_TOKEN_AGE.set_function(_refresh_token_age)
 
 service = ViessmannOAuthService(
     client_id=CLIENT_ID,
@@ -249,10 +266,11 @@ def debug_status():
     }
 
 
-@app.get(DEBUG_RAW_URL)
-def debug_raw():
-    # Endpoint for debuging purpose
-    return service.token_store.load()
+if DEBUG_ENABLED:
+    @app.get(DEBUG_RAW_URL)
+    def debug_raw():
+        """ Returns raw tokens - for local debugging only (VIESSMANN_DEBUG_ENABLED) """
+        return service.token_store.load()
 
 
 @app.get(SUCCESS_URL)
@@ -260,7 +278,7 @@ def viessmann_success():
     """ Generic endpoint to show OAuth2 Login status """
     return HTMLResponse(
         "<h2>✅ Viessmann OAuth success</h2><p>You can close this window.</p>"
-        f"<p><a href='LOGIN_URL'>Source</a></p>",
+        f"<p><a href='{LOGIN_URL}'>Source</a></p>",
         status_code=200,
     )
 
@@ -271,22 +289,22 @@ def viessmann_fail(error: str = "", desc: str = ""):
     # Error page to share error text.
     return HTMLResponse(
         f"<h2>❌ Viessmann OAuth failed</h2>"
-        f"<p>error={error}</p><p>{desc}</p>"
-        f"<p><a href='LOGIN_URL'>Try again</a></p>",
+        f"<p>error={html.escape(error)}</p><p>{html.escape(desc)}</p>"
+        f"<p><a href='{LOGIN_URL}'>Try again</a></p>",
         status_code=200,
     )
 
-@app.get(DEBUG_ROUTES_URL)
-def show_routes():
-    out = []
-    for r in viessmann_prometheus.routes:
-      out.append({"path": r.path, "methods": sorted(getattr(r, "methods", []) or [])})
-    return JSONResponse(out)
+if DEBUG_ENABLED:
+    @app.get(DEBUG_ROUTES_URL)
+    def show_routes():
+        out = []
+        for r in app.routes:
+            out.append({"path": r.path, "methods": sorted(getattr(r, "methods", []) or [])})
+        return JSONResponse(out)
 
-
-@app.get(DEBUG_CONFIG_URL)
-def get_config() :
-    return JSONResponse(viessmann_prometheus.state.config)
+    @app.get(DEBUG_CONFIG_URL)
+    def get_config():
+        return JSONResponse(metrics_service.config.to_dict())
 
 
 @app.get(METRICS_URL)

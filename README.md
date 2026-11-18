@@ -154,7 +154,7 @@ server {
     # OAuth Callback for Viessmann 
     # The callback FQDN should be registered within Viessmann Developer portal
 
-    localtion /callback {
+    location /callback {
     
     proxy_set_header Accept-Encoding "";
     proxy_set_header Host $host;
@@ -300,6 +300,7 @@ The Viessmann Exporter is configured via environment variables:
 | `VIESSMANN_CLIENT_SECRET` | Viessmann API OAuth2 client secret        | ✅ Yes   | —       |
 | `VIESSMANN_REDIRECT_URI` |   Viessmann API OAuth2 callback url  e.g. "<https://your.domain.com/callback"\`>  | ✅ Yes   | —       |
 | `EXPORTER_PORT`           | Port to expose metrics on                 | ❌ No    | `9000`  |
+| `VIESSMANN_DEBUG_ENABLED` | Enable `/debug/token/raw`, `/debug/routes`, `/debug/config` (raw tokens - local debugging only) | ❌ No | `false` |
 
 Set these variables directly or pass them via a `.env` file.
 

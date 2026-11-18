@@ -5,6 +5,7 @@ import jwt
 import logging
 import sys
 import hashlib
+import os
 
 from typing import Any, Dict
 from pathlib import Path
@@ -97,7 +98,7 @@ class TokenStore:
             cls.access_updated_at = 0
             cls.access_expires_in = 0
 
-        refresh_token: str = tokens.get('referesh_token')
+        refresh_token: str = tokens.get('refresh_token')
         if refresh_token is not None:
             cls.refresh_token = refresh_token
 
@@ -128,6 +129,11 @@ class TokenStore:
             'updated_at': self.access_updated_at
         }
         self.token_refresh(store, old_store)
-        self.path.write_text(json.dumps(store, indent=2, sort_keys=True))
+        # atomic write, token file is readable by the owner only
+        tmp = self.path.with_name(self.path.name + '.tmp')
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            f.write(json.dumps(store, indent=2, sort_keys=True))
+        os.replace(tmp, self.path)
 
         
