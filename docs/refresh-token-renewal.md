@@ -49,8 +49,47 @@ stays at the time of the last interactive login. Treat that timestamp as the sta
 
    Changing the scope requires a new login.
 
-4. **Browser access** to the exporter (`/oauth/login`) from a machine that can reach the
-   redirect URI. Restrict `/oauth/*` and `/debug/*` at the reverse proxy.
+4. **Browser access** to the exporter login page from a machine that can reach the
+   redirect URI. Expose only the login, callback and status pages, and restrict them to trusted
+   networks (see below).
+
+## Reverse proxy example (nginx, prefix `/viessmann`)
+
+Publish only what the login flow needs, restricted to private networks (`allow` your internal
+ranges, then `deny all`). The browser used for login must be on the LAN or VPN.
+
+| Public URL | Proxied to |
+|------------|------------|
+| `/viessmann/login` | `127.0.0.1:9000/viessmann/oauth/login` |
+| `/viessmann/callback` | `127.0.0.1:9000/viessmann/oauth/callback` (query string preserved) |
+| `/viessmann/success`, `/viessmann/fail` | same path, unchanged |
+| `/viessmann/debug/token/status` | same path, unchanged (optional, no secrets) |
+
+The app must serve the same paths nginx forwards to. Container environment:
+
+```bash
+-e VIESSMANN_REDIRECT_URI=https://your.domain.com/viessmann/callback \
+-e VIESSMANN_LOGIN_URL=/viessmann/oauth/login \
+-e VIESSMANN_CALLBACK_URL=/viessmann/oauth/callback \
+-e VIESSMANN_SUCCESS_URL=/viessmann/success \
+-e VIESSMANN_FAIL_URL=/viessmann/fail \
+-e VIESSMANN_DEBUG_STATUS_URL=/viessmann/debug/token/status
+```
+
+Notes:
+
+- The redirect URI registered in the Viessmann developer portal is the **public** one
+  (`.../viessmann/callback`), not the internal `/viessmann/oauth/callback`.
+- Do not proxy `/oauth/refresh-access`, `/metrics` or any other `/debug/*` route. Scrape
+  `/metrics` from the internal network only.
+
+Status check through the proxy:
+
+```bash
+curl -s https://your.domain.com/viessmann/debug/token/status | jq
+```
+
+Point the expiry-check script at this URL if it runs from another host.
 
 ## Renewal procedure
 
@@ -64,7 +103,7 @@ Do this before the refresh token reaches about 180 days (suggest at day 150), or
 
    Look at `refresh_updated_at` (epoch seconds, start of the clock), `last_error`, `has_refresh_token`.
 
-2. Open `https://your.domain.com/oauth/login` in a browser, log in to Viessmann, and approve.
+2. Open `https://your.domain.com/viessmann/login` (without the proxy: `/oauth/login`) in a browser, log in to Viessmann, and approve.
    You are redirected to `/oauth/callback` and then `/success`.
 
 3. Verify the new token was stored:
@@ -108,14 +147,13 @@ age_days=$(( ( $(date +%s) - ts ) / 86400 ))
 | Tokens gone after redeploy | No volume on `/app/tokens` | Mount a volume, re-login |
 | `No refresh_token stored` | First start or empty volume | Run login |
 
-## Known issues in `viessmann/` worth fixing
+## Security notes
 
-- `token_store.py` `token_refresh` reads `tokens.get('referesh_token')` (typo), so the in-memory
-  `TokenStore.refresh_token` is never populated. It is currently harmless because
-  `refresh_access_token` reads from the file, but it is a latent bug.
-- `/debug/token/raw` returns the raw access and refresh tokens. Never expose it publicly.
-- There is no Prometheus metric for refresh token age. Exporting
-  `time() - refresh_updated_at` would allow alerting in Prometheus instead of cron.
-- Token file writes are not atomic (`Path.write_text`); a crash mid-write could corrupt the file.
-  Write to a temp file and `os.replace`.
-- The `success`/`fail` pages use the literal `'LOGIN_URL'` in the link instead of the variable.
+- The token file contains a long-lived refresh token. Keep the volume private to the container
+  user (mode `0600`), exclude it from backups that leave your control, and never commit it.
+- Pass `VIESSMANN_CLIENT_SECRET` through a secret store or an env file with restricted
+  permissions, not on a shared shell command line.
+- The exporter has unauthenticated debug routes under `/debug/*`, one of which returns the raw
+  tokens. Never publish them; allow only the routes listed in the proxy example.
+- Treat tokens as compromised if they appear in logs or tickets: re-run the login and, if needed,
+  revoke the client credentials in the Viessmann developer portal.
